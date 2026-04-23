@@ -3,3 +3,76 @@ title: "1_2_dataexp_dimensionalityred"
 output: html_document
 ---
 
+# Excersize 1:
+## Report sample count by transcriptome subtype (paper_Transcriptome.Subtype): Classical (CL), Mesenchymal (ME), Neural (NE), Proneural (PN).
+
+At first we load the data
+```{r}
+#load(here(data/GBM_data.RData))
+```
+Next we can report sample counts by transcriptome subtype
+```{r}
+table(gbm_anot_clean$paper_Transcriptome.Subtype)
+```
+
+##  Are there recurrent tumor samples (shortLetterCode = TR)? How will you treat them?
+```{r}
+any(gbm_anot_clean == "TR", na.rm = T)
+```
+# Excersize 2:
+##  PCA (PC1 vs. PC2, PC1 vs. PC3): color by transcriptome subtype and by IDH status (paper_IDH.status).
+
+At first we want to transform our matrix and scale the data so that the gene expression for each gene is normally distributed with mean 0 and variance of 1
+```{r}
+library(dplyr)
+# Remove gene column and set rownames to gene names
+t_gbm_exp_clean <- gbm_exp_clean
+t_gbm_exp_clean <- t_gbm_exp_clean[,-1]
+t_gbm_exp_clean <- t(t_gbm_exp_clean)
+colnames(t_gbm_exp_clean) <- gbm_exp_clean$gene
+
+# Now normalize the gene expression levels using Z-transformation
+norm_t_gbm_exp_clean <- scale(t_gbm_exp_clean)
+
+# Next we compute the principle compontent analysis
+pca_gbm_exp <- prcomp(norm_t_gbm_exp_clean)
+pca_gbm_scores <- as.data.frame(pca_gbm_exp$x)
+pca_gbm_scores$barcode = rownames(pca_gbm_scores)
+plot_pca_gbm_df <- merge(pca_gbm_scores, gbm_anot_clean[, c("paper_Transcriptome.Subtype", "paper_IDH.status", "barcode")], by = "barcode")
+
+#Compute Variance explained by each PC
+pca_gbm_var_explained <- pca_gbm_exp$sdev^2 / sum(pca_gbm_exp$sdev^2)
+
+#Next we plot PC1 against PC2 and PC3 coloring each element according to transcriptome subtype and IDH status
+library(ggplot2)
+
+p1 <- ggplot(plot_pca_gbm_df, 
+             aes(x = PC1, y = PC2, color = paper_Transcriptome.Subtype)) +
+  geom_point(size = 2, alpha = 0.8) +
+  theme_minimal() +
+  labs(title = "PC1 vs PC2", color = "Subtype")
+
+p2 <- ggplot(plot_pca_gbm_df, 
+             aes(x = PC1, y = PC3, color = paper_Transcriptome.Subtype)) +
+  geom_point(size = 2, alpha = 0.8) +
+  theme_minimal() +
+  labs(title = "PC1 vs PC3", color = "Subtype")
+
+p3 <- ggplot(plot_pca_gbm_df, 
+             aes(x = PC1, y = PC2, color = paper_IDH.status)) +
+  geom_point(size = 2, alpha = 0.8) +
+  theme_minimal() +
+  labs(title = "PC1 vs PC2", color = "IDH status")
+
+p4 <- ggplot(plot_pca_gbm_df, 
+             aes(x = PC1, y = PC3, color = paper_IDH.status)) +
+  geom_point(size = 2, alpha = 0.8) +
+  theme_minimal() +
+  labs(title = "PC1 vs PC3", color = "IDH status")
+
+library(patchwork)
+
+(p1 | p2) /
+(p3 | p4)
+```
+
