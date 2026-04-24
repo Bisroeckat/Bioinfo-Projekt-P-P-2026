@@ -2,4 +2,244 @@
 title: "3_4_expressiondist_differentialexp"
 output: html_document
 ---
+```{r}
+#load packages
+library(dplyr)
+library(ggplot2)
+library(here)
+library(edgeR)
+library(patchwork)
+```
+Load the data
+```{r}
+load(here("data/GBM_data.RData"))
+```
+Data cleaning
+```{r}
+# Remove gene column and set rownames to gene names
+t_gbm_exp_clean <- gbm_exp_clean
+t_gbm_exp_clean <- t_gbm_exp_clean[,-1]
+t_gbm_exp_clean <- t(t_gbm_exp_clean)
+colnames(t_gbm_exp_clean) <- gbm_exp_clean$gene
+```
+# Exercise 3:
+## Are logCPM values approximately normal? Compare Q-Q plots across subtypes.
+```{r}
+t_gbm_exp_clean <- as.data.frame(t_gbm_exp_clean)
+t_gbm_exp_clean$barcode <- rownames(t_gbm_exp_clean)
+
+annot_t_gbm_exp_clean <- merge(t_gbm_exp_clean, gbm_anot_clean[, c("paper_Transcriptome.Subtype", "paper_IDH.status", "barcode")], by = "barcode")
+```
+Compute QQ-Plot on distribution of expression values within samples, grouped by subtype
+```{r}
+expr <- annot_t_gbm_exp_clean[, !(names(annot_t_gbm_exp_clean) %in% 
+  c("barcode", "paper_Transcriptome.Subtype", "paper_IDH.status"))]
+
+subtypes <- annot_t_gbm_exp_clean$paper_Transcriptome.Subtype
+
+values <- as.numeric(as.matrix(expr))
+Subtype <- rep(subtypes, each = ncol(expr))  
+
+plot_df <- data.frame(value = values, Subtype = Subtype)
+
+
+```
+## plot side by side (takes a while to load)!
+```{r}
+ggplot(plot_df, aes(sample = value)) +
+  stat_qq(size = 0.5) +
+  stat_qq_line(color = "red") +
+  facet_wrap(~ Subtype) +
+  theme_minimal()
+```
+## CPM values appear to be roughly normaly distributed
+##Question 2:Does normalization method (quantile vs. TMM vs. none) affect the separation observed in PCA?
+```{r}
+#No normalization
+pca_gbm_norm <- prcomp(t_gbm_exp_clean[, !(names(t_gbm_exp_clean) %in% "barcode")])
+pca_gbm_norm_scores <- as.data.frame(pca_gbm_norm$x)
+pca_gbm_norm_scores$barcode = rownames(pca_gbm_norm_scores)
+plot_pca_gbm_norm_df <- merge(pca_gbm_norm_scores, gbm_anot_clean[, c("paper_Transcriptome.Subtype", "paper_IDH.status", "barcode")], by = "barcode")
+```
+
+
+quantile normalisation
+```{r}
+#Remove non numerical columns
+  expr_mat <- t_gbm_exp_clean[, !(names(t_gbm_exp_clean) %in% 
+    c("barcode", "paper_Transcriptome.Subtype", "paper_IDH.status"))]
+```
+```{r}
+#sort to obtain ranks
+sorted_mat <- apply(expr_mat, 2, sort)
+```
+```{r}
+#obtain mean
+rank_means <- rowMeans(sorted_mat)
+```
+```{r}
+#replace values by ranks
+qn_mat <- expr_mat  # placeholder
+
+for (i in 1:ncol(expr_mat)) {
+  ranks <- order(expr_mat[, i])
+  qn_mat[ranks, i] <- rank_means
+}
+```
+```{r}
+#plot
+pca_qn <- prcomp(qn_mat)
+
+pca_scores <- as.data.frame(pca_qn$x)
+pca_scores$barcode <- rownames(pca_scores)
+
+annot <- gbm_anot_clean[, c("barcode", "paper_Transcriptome.Subtype", "paper_IDH.status")]
+
+plot_qn_df <- merge(pca_scores, annot, by = "barcode")
+```
+
+TMM normalisation (edgeR)
+```{r}
+expr_counts <- 2^(t_gbm_exp_clean[, !(names(t_gbm_exp_clean) %in% 
+  c("barcode", "paper_Transcriptome.Subtype", "paper_IDH.status"))]) 
+
+expr_counts <- as.matrix(expr_counts)
+mode(expr_counts) <- "numeric"
+```
+```{r}
+
+dge_obj <- DGEList(counts = expr_counts)
+```
+```{r}
+dge_obj <- calcNormFactors(dge_obj, method = "TMM")
+```
+```{r}
+expr_tmm_logcpm <- cpm(dge_obj, log = TRUE)
+```
+```{r}
+pca_tmm_result <- prcomp(expr_tmm_logcpm)
+
+pca_tmm_scores <- as.data.frame(pca_tmm_result$x)
+pca_tmm_scores$barcode <- rownames(pca_tmm_scores)
+```
+```{r}
+annotation_df <- gbm_anot_clean[, c("barcode", "paper_Transcriptome.Subtype", "paper_IDH.status")]
+
+plot_tmm_df <- merge(pca_tmm_scores, annotation_df, by = "barcode")
+```
+
+
+```{r}
+
+
+p1 <- ggplot(plot_tmm_df, aes(PC1, PC2, color = paper_Transcriptome.Subtype)) +
+  geom_point(size = 2, alpha = 0.8) +
+  theme_minimal() +
+  labs(title = "PCA after TMM normalization")
+
+p2 <- ggplot(plot_qn_df, aes(PC1, PC2, color = paper_Transcriptome.Subtype)) +
+  geom_point(size = 2, alpha = 0.8) +
+  theme_minimal() +
+  labs(title = "PCA after manual quantile normalization")
+
+p3 <- ggplot(plot_pca_gbm_norm_df, 
+             aes(x = PC1, y = PC2, color = paper_Transcriptome.Subtype)) +
+  geom_point(size = 2, alpha = 0.8) +
+  theme_minimal() +
+  labs(title = "PCA without normalisation", color = "Subtype")
+
+(p1) /
+(p2) /
+(p3)
+```
+
+# Exercise 4:
+##Top DEGs between subtypes (one-vs-rest Wilcoxon, BH-corrected). Focus on CL vs. ME and PN vs. NE contrasts.
+```{r}
+#CL vs ME
+expr_logcp <- annot_t_gbm_exp_clean[, !(names(annot_t_gbm_exp_clean) %in% 
+  c("barcode", "paper_Transcriptome.Subtype", "paper_IDH.status"))]
+
+expr_logcp <- as.matrix(expr_logcp)
+mode(expr_logcp) <- "numeric"
+
+subtype_vec <- annot_t_gbm_exp_clean$paper_Transcriptome.Subtype
+```
+```{r}
+#Extract Ids of subtype samples
+cl_idx <- subtype_vec == "CL"
+me_idx <- subtype_vec == "ME"
+```
+```{r}
+#Gene wise Wilcoxon Rank sum test
+pvals_cl_me <- numeric(ncol(expr_logcp))
+logFC_cl_me <- numeric(ncol(expr_logcp))
+
+for (i in 1:ncol(expr_logcp)) {
+  
+  cl_vals <- expr_logcp[cl_idx, i]
+  me_vals <- expr_logcp[me_idx, i]
+  
+  pvals_cl_me[i] <- wilcox.test(cl_vals, me_vals)$p.value
+  logFC_cl_me[i] <- mean(cl_vals) - mean(me_vals)
+}
+```
+```{r}
+deg_CL_ME <- data.frame(
+  gene = colnames(expr_logcp),
+  logFC = logFC_cl_me,
+  pval = pvals_cl_me,
+  padj = p.adjust(pvals_cl_me, method = "BH")
+)
+
+deg_CL_ME <- deg_CL_ME[order(deg_CL_ME$padj), ]
+```
+```{r}
+#BH correction and results table
+deg_CL_ME <- data.frame(
+  gene = colnames(expr_logcp),
+  logFC = logFC_cl_me,
+  pval = pvals_cl_me,
+  padj = p.adjust(pvals_cl_me, method = "BH")
+)
+
+deg_CL_ME <- deg_CL_ME[order(deg_CL_ME$padj), ]
+```
+##BN vs NE
+```{r}
+pn_idx <- subtype_vec == "PN"
+ne_idx <- subtype_vec == "NE"
+```
+```{r}
+pvals_pn_ne <- numeric(ncol(expr_logcp))
+logFC_pn_ne <- numeric(ncol(expr_logcp))
+
+for (i in 1:ncol(expr_logcp)) {
+  
+  pn_vals <- expr_logcp[pn_idx, i]
+  ne_vals <- expr_logcp[ne_idx, i]
+  
+  pvals_pn_ne[i] <- wilcox.test(pn_vals, ne_vals)$p.value
+  logFC_pn_ne[i] <- mean(pn_vals) - mean(ne_vals)
+}
+```
+```{r}
+deg_PN_NE <- data.frame(
+  gene = colnames(expr_logcp),
+  logFC = logFC_pn_ne,
+  pval = pvals_pn_ne,
+  padj = p.adjust(pvals_pn_ne, method = "BH")
+)
+
+deg_PN_NE <- deg_PN_NE[order(deg_PN_NE$padj), ]
+```
+
+
+```{r}
+(deg_CL_ME)
+```
+
+```{r}
+
+```
 
