@@ -5,10 +5,17 @@ output: html_document
 
 # Excersize 1:
 ## Report sample count by transcriptome subtype (paper_Transcriptome.Subtype): Classical (CL), Mesenchymal (ME), Neural (NE), Proneural (PN).
+```{r}
+#load important libraries
+library(here)
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+```
 
 At first we load the data
 ```{r}
-#load(here(data/GBM_data.RData))
+load(here("data/GBM_data.RData"))
 ```
 Next we can report sample counts by transcriptome subtype
 ```{r}
@@ -24,7 +31,7 @@ any(gbm_anot_clean == "TR", na.rm = T)
 
 At first we want to transform our matrix and scale the data so that the gene expression for each gene is normally distributed with mean 0 and variance of 1
 ```{r}
-library(dplyr)
+
 # Remove gene column and set rownames to gene names
 t_gbm_exp_clean <- gbm_exp_clean
 t_gbm_exp_clean <- t_gbm_exp_clean[,-1]
@@ -44,7 +51,6 @@ plot_pca_gbm_df <- merge(pca_gbm_scores, gbm_anot_clean[, c("paper_Transcriptome
 pca_gbm_var_explained <- pca_gbm_exp$sdev^2 / sum(pca_gbm_exp$sdev^2)
 
 #Next we plot PC1 against PC2 and PC3 coloring each element according to transcriptome subtype and IDH status
-library(ggplot2)
 
 p1 <- ggplot(plot_pca_gbm_df, 
              aes(x = PC1, y = PC2, color = paper_Transcriptome.Subtype)) +
@@ -70,7 +76,6 @@ p4 <- ggplot(plot_pca_gbm_df,
   theme_minimal() +
   labs(title = "PC1 vs PC3", color = "IDH status")
 
-library(patchwork)
 
 (p1 | p2) /
 (p3 | p4)
