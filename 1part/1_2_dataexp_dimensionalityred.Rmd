@@ -217,22 +217,22 @@ umap_p4 <- ggplot(data = umap_pca_results_df_anot, aes(x = PCA_50.1, y = PCA_50.
 (umap_p1 | umap_p2) / (umap_p3 | umap_p4)
 ```
 ```{r}
-umap_p1.1 <- ggplot(data = umap_exp_gbm_df_anot, aes(x = V1, y = V2, color = paper_Pan.Glioma.RNA.Expression.Cluster)) +
+umap_p1.1 <- ggplot(data = umap_exp_gbm_df_anot, aes(x = V1, y = V2, color = paper_MGMT.promoter.status)) +
   geom_point(alpha = 0.8) +
   theme_minimal() + 
   labs(x = "UMAP 1", y = "UMAP 2", color = "Subtype")
 
-umap_p2.1 <- ggplot(data = umap_pca_results_df_anot, aes(x = PCA_10.1, y = PCA_10.2, color = paper_Pan.Glioma.RNA.Expression.Cluster)) + 
+umap_p2.1 <- ggplot(data = umap_pca_results_df_anot, aes(x = PCA_10.1, y = PCA_10.2, color = paper_MGMT.promoter.status)) + 
   geom_point(alpha = 0.8) +
   theme_minimal() +
   labs(x = "UMAP 1 from 10 PCs", y = "UMAP 2 from 10 PCs", color = "Subtype")
 
-umap_p3.1 <- ggplot(data = umap_pca_results_df_anot, aes(x = PCA_30.1, y = PCA_30.2, color = paper_Pan.Glioma.RNA.Expression.Cluster)) + 
+umap_p3.1 <- ggplot(data = umap_pca_results_df_anot, aes(x = PCA_30.1, y = PCA_30.2, color = paper_MGMT.promoter.status)) + 
   geom_point(alpha = 0.8) +
   theme_minimal() +
   labs(x = "UMAP 1 from 30 PCs", y = "UMAP 2 from 30 PCs", color = "Subtype")
 
-umap_p4.1 <- ggplot(data = umap_pca_results_df_anot, aes(x = PCA_50.1, y = PCA_50.2, color = paper_Pan.Glioma.RNA.Expression.Cluster)) + 
+umap_p4.1 <- ggplot(data = umap_pca_results_df_anot, aes(x = PCA_50.1, y = PCA_50.2, color = paper_MGMT.promoter.status)) + 
   geom_point(alpha = 0.8) +
   theme_minimal() +
   labs(x = "UMAP 1 from 50 PCs", y = "UMAP 2 from 50 PCs", color = "Subtype")
