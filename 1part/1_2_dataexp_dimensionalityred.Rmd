@@ -42,7 +42,7 @@ colnames(t_gbm_exp_clean) <- gbm_exp_clean$gene
 norm_t_gbm_exp_clean <- scale(t_gbm_exp_clean)
 
 # Next we compute the principle compontent analysis
-pca_gbm_exp <- prcomp(norm_t_gbm_exp_clean)
+pca_gbm_exp <- prcomp(norm_t_gbm_exp_clean, center = F, scale = F)
 pca_gbm_scores <- as.data.frame(pca_gbm_exp$x)
 pca_gbm_scores$barcode = rownames(pca_gbm_scores)
 plot_pca_gbm_df <- merge(pca_gbm_scores, gbm_anot_clean[, c("paper_Transcriptome.Subtype", "paper_IDH.status", "barcode")], by = "barcode")
@@ -50,6 +50,28 @@ plot_pca_gbm_df <- merge(pca_gbm_scores, gbm_anot_clean[, c("paper_Transcriptome
 #Compute Variance explained by each PC
 pca_gbm_var_explained <- pca_gbm_exp$sdev^2 / sum(pca_gbm_exp$sdev^2)
 
+```
+We also want to select the loadings of the PCs so we can visualize then in the plots as well
+```{r}
+pca_gbm_loadings <- as.data.frame(pca_gbm_exp$rotation)
+# Add a row equivalent to the rownames (genes) to the data.frame
+pca_gbm_loadings$genes <- rownames(pca_gbm_loadings)
+# Next we select only the genes which have the highest absolute loadings 
+pca_gbm_p1_top <- pca_gbm_loadings[
+  order(abs(pca_gbm_loadings$PC1), decreasing = TRUE),
+][1:10, c("PC1", "genes")]
+
+pca_gbm_p2_top <- pca_gbm_loadings[
+  order(abs(pca_gbm_loadings$PC2), decreasing = TRUE),
+][1:10, c("PC2", "genes")]
+
+pca_gbm_p3_top <- pca_gbm_loadings[
+  order(abs(pca_gbm_loadings$PC3), decreasing = TRUE),
+][1:10,c("PC3", "genes")]
+```
+
+
+```{r}
 #Next we plot PC1 against PC2 and PC3 coloring each element according to transcriptome subtype and IDH status
 
 p1 <- ggplot(plot_pca_gbm_df, 
@@ -80,4 +102,142 @@ p4 <- ggplot(plot_pca_gbm_df,
 (p1 | p2) /
 (p3 | p4)
 ```
+We can see that the subtypes are especially well separated in the PC1 vs PC2 plot along the PC2 axis. 
+```{r}
+#Show the top loadings of the PCs
+p_pc1 <- ggplot(pca_gbm_p1_top, aes(x = genes, y = PC1)) +
+  geom_col(color = "white", fill = "red") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Top loadings PC1", x = "Gene", y = "Loading")
+
+p_pc2 <- ggplot(pca_gbm_p2_top, aes(x = genes, y = PC2)) +
+  geom_col(color = "white", fill = "red") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Top loadings PC2", x = "Gene", y = "Loading")
+
+p_pc3 <- ggplot(pca_gbm_p3_top, aes(x = genes, y = PC3)) +
+  geom_col(color = "white", fill = "red") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Top loadings PC3", x = "Gene", y = "Loading")
+
+(p_pc1 | p_pc2) / p_pc3
+```
+## t-SNE: do the four subtypes separate clearly? Which subtypes are most similar?
+Next we want to perform t-SNE and visualize the data in a plot.
+```{r}
+# t-SNE is performed on the PCA data meaning that instead of all genes we enter a subset of PCs so that the distance between each point (patient) is more meaningful. To select how many PCs we choose we can visualize the cumulative variance explained by the PCs first.
+plot(cumsum(pca_gbm_var_explained),  xlab = "Number of PCs",
+     ylab = "Cumulative variance explained")
+# Next we define how many PCs we want to include in the t-SNE analysis
+n_pcs_tsne <- 30
+tsne_input <- pca_gbm_scores[, 1:n_pcs_tsne]
+# We also need to install and load Rtsne 
+library("Rtsne")
+# next we run the analysis with a seed for reproducibility
+set.seed(42)
+
+tsne_result_gbm <- Rtsne(
+  tsne_input,
+  dims = 2,              # for the 2 D representation
+  perplexity = 10,       # adjust based on sample size (5–50 typical)
+  verbose = TRUE,
+  max_iter = 1000,
+  check_duplicates = FALSE
+)
+
+# Now we can extract the 2-D coordinates from the results
+tsne_df <- data.frame(
+  TSNE1 = tsne_result_gbm$Y[,1],
+  TSNE2 = tsne_result_gbm$Y[,2]
+)
+tsne_df$barcode = rownames(pca_gbm_scores)
+# And we also add the subtype from the annotation data
+tsne_df_anot = merge(tsne_df, gbm_anot_clean, by = "barcode")
+
+# Next we need to plot the data and color it according to their respective subtype
+ggplot(tsne_df_anot, aes(x = TSNE1, y = TSNE2, color = paper_Transcriptome.Subtype)) +
+  geom_point(size = 2, alpha = 0.8) +
+  theme_minimal() +
+  labs(x = "t-SNE 1", y = "t-SNE 2", color = "Subtype")
+```
+## UMAP on expression and on PCs: compare embeddings. Does the number of PCs affect subtype separation?
+```{r}
+# First we need to load the uwot package for UMAP 
+library("uwot")
+
+# At first we will compute the UMAP on the scaled expression data we also used for the pca.
+set.seed(42)
+umap_exp_gbm <- umap(norm_t_gbm_exp_clean)
+# We will store the values for the data in a data.frame and also include the annotations
+umap_exp_gbm_df <- as.data.frame(umap_exp_gbm)
+umap_exp_gbm_df$barcode <- rownames(umap_exp_gbm_df)
+umap_exp_gbm_df_anot <- merge(umap_exp_gbm_df, gbm_anot_clean, by = "barcode")
+
+# Next we will perform the same thing on the PCA data with different numbers of PCs
+pc_sets_umap <- list(
+  PCs_10 = pca_gbm_scores[,1:10],
+  PCs_30 = pca_gbm_scores[,1:30],
+  PCs_50 = pca_gbm_scores[,1:50]
+)
+umap_pca_results <- lapply(pc_sets_umap, function(x) {
+  umap(x)
+})
+umap_pca_results_df <- data.frame(PCA_10 = umap_pca_results$PCs_10[,1:2],
+                                  PCA_30 = umap_pca_results$PCs_30[,1:2],
+                                  PCA_50 = umap_pca_results$PCs_50[,1:2]
+                                  )
+umap_pca_results_df$barcode <- rownames(umap_pca_results_df)
+umap_pca_results_df_anot <- merge(umap_pca_results_df, gbm_anot_clean, by = "barcode")
+```
+Next we want to plot the data
+```{r}
+umap_p1 <- ggplot(data = umap_exp_gbm_df_anot, aes(x = V1, y = V2, color = paper_Transcriptome.Subtype)) +
+  geom_point(alpha = 0.8) +
+  theme_minimal() + 
+  labs(x = "UMAP 1", y = "UMAP 2", color = "Subtype")
+
+umap_p2 <- ggplot(data = umap_pca_results_df_anot, aes(x = PCA_10.1, y = PCA_10.2, color = paper_Transcriptome.Subtype)) + 
+  geom_point(alpha = 0.8) +
+  theme_minimal() +
+  labs(x = "UMAP 1 from 10 PCs", y = "UMAP 2 from 10 PCs", color = "Subtype")
+
+umap_p3 <- ggplot(data = umap_pca_results_df_anot, aes(x = PCA_30.1, y = PCA_30.2, color = paper_Transcriptome.Subtype)) + 
+  geom_point(alpha = 0.8) +
+  theme_minimal() +
+  labs(x = "UMAP 1 from 30 PCs", y = "UMAP 2 from 30 PCs", color = "Subtype")
+
+umap_p4 <- ggplot(data = umap_pca_results_df_anot, aes(x = PCA_50.1, y = PCA_50.2, color = paper_Transcriptome.Subtype)) + 
+  geom_point(alpha = 0.8) +
+  theme_minimal() +
+  labs(x = "UMAP 1 from 50 PCs", y = "UMAP 2 from 50 PCs", color = "Subtype")
+
+(umap_p1 | umap_p2) / (umap_p3 | umap_p4)
+```
+```{r}
+umap_p1.1 <- ggplot(data = umap_exp_gbm_df_anot, aes(x = V1, y = V2, color = paper_Pan.Glioma.RNA.Expression.Cluster)) +
+  geom_point(alpha = 0.8) +
+  theme_minimal() + 
+  labs(x = "UMAP 1", y = "UMAP 2", color = "Subtype")
+
+umap_p2.1 <- ggplot(data = umap_pca_results_df_anot, aes(x = PCA_10.1, y = PCA_10.2, color = paper_Pan.Glioma.RNA.Expression.Cluster)) + 
+  geom_point(alpha = 0.8) +
+  theme_minimal() +
+  labs(x = "UMAP 1 from 10 PCs", y = "UMAP 2 from 10 PCs", color = "Subtype")
+
+umap_p3.1 <- ggplot(data = umap_pca_results_df_anot, aes(x = PCA_30.1, y = PCA_30.2, color = paper_Pan.Glioma.RNA.Expression.Cluster)) + 
+  geom_point(alpha = 0.8) +
+  theme_minimal() +
+  labs(x = "UMAP 1 from 30 PCs", y = "UMAP 2 from 30 PCs", color = "Subtype")
+
+umap_p4.1 <- ggplot(data = umap_pca_results_df_anot, aes(x = PCA_50.1, y = PCA_50.2, color = paper_Pan.Glioma.RNA.Expression.Cluster)) + 
+  geom_point(alpha = 0.8) +
+  theme_minimal() +
+  labs(x = "UMAP 1 from 50 PCs", y = "UMAP 2 from 50 PCs", color = "Subtype")
+
+(umap_p1.1 | umap_p2.1) / (umap_p3.1 | umap_p4.1)
+```
+
 
