@@ -9,6 +9,7 @@ library(ggplot2)
 library(here)
 library(edgeR)
 library(patchwork)
+library(pheatmap)
 ```
 Load the data
 ```{r}
@@ -156,90 +157,77 @@ p3 <- ggplot(plot_pca_gbm_norm_df,
 # Exercise 4:
 ##Top DEGs between subtypes (one-vs-rest Wilcoxon, BH-corrected). Focus on CL vs. ME and PN vs. NE contrasts.
 ```{r}
-#CL vs ME
-expr_logcp <- annot_t_gbm_exp_clean[, !(names(annot_t_gbm_exp_clean) %in% 
-  c("barcode", "paper_Transcriptome.Subtype", "paper_IDH.status"))]
+# ----------------------------
+# 1. Pool DEGs across subtypes
+# ----------------------------
+all_deg <- do.call(rbind, results_list)
 
-expr_logcp <- as.matrix(expr_logcp)
-mode(expr_logcp) <- "numeric"
+# Rank by strongest effect size
+all_deg <- all_deg[order(-abs(all_deg$logFC)), ]
+top50_genes <- head(all_deg$gene, 50)
+row.names(annot_t_gbm_exp_clean) <- annot_t_gbm_exp_clean$barcode
+row.names(gbm_anot_clean) <- gbm_anot_clean$barcode
 
-subtype_vec <- annot_t_gbm_exp_clean$paper_Transcriptome.Subtype
-```
-```{r}
-#Extract Ids of subtype samples
-cl_idx <- subtype_vec == "CL"
-me_idx <- subtype_vec == "ME"
-```
-```{r}
-#Gene wise Wilcoxon Rank sum test
-pvals_cl_me <- numeric(ncol(expr_logcp))
-logFC_cl_me <- numeric(ncol(expr_logcp))
+# ----------------------------
+# 2. Expression matrix
+# ----------------------------
+expr_mat <- annot_t_gbm_exp_clean[, top50_genes]
 
-for (i in 1:ncol(expr_logcp)) {
-  
-  cl_vals <- expr_logcp[cl_idx, i]
-  me_vals <- expr_logcp[me_idx, i]
-  
-  pvals_cl_me[i] <- wilcox.test(cl_vals, me_vals)$p.value
-  logFC_cl_me[i] <- mean(cl_vals) - mean(me_vals)
-}
+# Scale per gene (important for heatmap patterns)
+expr_mat_scaled <- scale(expr_mat)
+
+# ----------------------------
+# 3. Annotation data
+# ----------------------------
+ann <- gbm_anot_clean[rownames(expr_mat_scaled), c(
+  "paper_Transcriptome.Subtype",
+  "paper_IDH.status",
+  "paper_MGMT.promoter.status",
+  "paper_Grade"
+)]
+
+
+# ----------------------------
+# 4. Handle NA values
+# ----------------------------
+ann$paper_Transcriptome.Subtype[is.na(ann$paper_Transcriptome.Subtype)] <- "Unknown"
+ann$paper_IDH.status[is.na(ann$paper_IDH.status)] <- "Unknown"
+ann$paper_MGMT.promoter.status[is.na(ann$paper_MGMT.promoter.status)] <- "Unknown"
+ann$paper_Grade[is.na(ann$paper_Grade)] <- "Unknown"
+
+row.names(ann) <- gbm_anot_clean$barcode
+# Convert to factors
+#ann$paper_Transcriptome.Subtype <- as.factor(ann$paper_Transcriptome.Subtype)
+#ann$paper_IDH.status <- as.factor(ann$paper_IDH.status)
+#ann$paper_MGMT.promoter.status <- as.factor(ann$paper_MGMT.promoter.status)
+#ann$paper_Grade <- as.factor(ann$paper_Grade)
+
+# ----------------------------
+# 5. Optional: annotation colors
+# ----------------------------
+ann_colors <- list(
+  paper_Transcriptome.Subtype = c(CL="red", ME="blue", NE="green", PN="purple", Unknown="grey"),
+  paper_IDH.status = c(Mutant="orange", WT="grey", Unknown="black"),
+  paper_MGMT.promoter.status = c(Methylated="darkgreen", Unmethylated="brown", Unknown="black"),
+  paper_Grade = c(G4="red", Unknown="black")
+)
 ```
+
 ```{r}
-deg_CL_ME <- data.frame(
-  gene = colnames(expr_logcp),
-  logFC = logFC_cl_me,
-  pval = pvals_cl_me,
-  padj = p.adjust(pvals_cl_me, method = "BH")
+pheatmap(
+  expr_mat,
+  annotation_col = ann$paper_IDH.status,
+  annotation_colors = ann_colors,
+  show_rownames = FALSE,
+  show_colnames = TRUE,
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  scale = "none"
 )
 
-deg_CL_ME <- deg_CL_ME[order(deg_CL_ME$padj), ]
-```
-```{r}
-#BH correction and results table
-deg_CL_ME <- data.frame(
-  gene = colnames(expr_logcp),
-  logFC = logFC_cl_me,
-  pval = pvals_cl_me,
-  padj = p.adjust(pvals_cl_me, method = "BH")
-)
 
-deg_CL_ME <- deg_CL_ME[order(deg_CL_ME$padj), ]
-```
-##BN vs NE
-```{r}
-pn_idx <- subtype_vec == "PN"
-ne_idx <- subtype_vec == "NE"
-```
-```{r}
-pvals_pn_ne <- numeric(ncol(expr_logcp))
-logFC_pn_ne <- numeric(ncol(expr_logcp))
-
-for (i in 1:ncol(expr_logcp)) {
-  
-  pn_vals <- expr_logcp[pn_idx, i]
-  ne_vals <- expr_logcp[ne_idx, i]
-  
-  pvals_pn_ne[i] <- wilcox.test(pn_vals, ne_vals)$p.value
-  logFC_pn_ne[i] <- mean(pn_vals) - mean(ne_vals)
-}
-```
-```{r}
-deg_PN_NE <- data.frame(
-  gene = colnames(expr_logcp),
-  logFC = logFC_pn_ne,
-  pval = pvals_pn_ne,
-  padj = p.adjust(pvals_pn_ne, method = "BH")
-)
-
-deg_PN_NE <- deg_PN_NE[order(deg_PN_NE$padj), ]
 ```
 
 
-```{r}
-(deg_CL_ME)
-```
 
-```{r}
-
-```
 
