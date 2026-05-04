@@ -2,4 +2,392 @@
 title: "5_predictivemodel"
 output: html_document
 ---
+#Excersize 5
+##Target: paper_Transcriptome.Subtype (4-class). Train RF and Multinomial Logistic Regression.
+
+In this part we want to train a random forest and multinomial logistic regression to predict the tumor subtype (paper_Transcriptome.Subtype) which can take 4 values. 
+
+At first we need to load the data here
+```{r}
+library(here)
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+
+load(here("data/GBM_data.RData"))
+```
+Next we will create a data frame with the patients as rows and genes + subtype as columns without any missing values (NA)
+```{r}
+# set rows to patient barcodes and columns to genes
+data_model <- gbm_exp_clean
+data_model <- data_model[,-1]
+data_model <- t(data_model)
+colnames(data_model) <- gbm_exp_clean$gene
+data_model = scale(data_model)
+data_model = as.data.frame(data_model)
+# in order to join the annotation we match the rownames of data_model and the barcodes in the annotation data 
+data_model_anot = data_model
+idx <- match(rownames(data_model_anot), gbm_anot_clean$barcode)
+data_model_anot$paper_Transcriptome.Subtype <- gbm_anot_clean$paper_Transcriptome.Subtype[idx]
+# remove NAs
+data_model_anot <- data_model_anot %>% na.omit()
+```
+Now we want to train a random forest and a multinomial logistic regression model. 
+
+```{r}
+# first we convert the subtype into a factor
+data_model_anot$paper_Transcriptome.Subtype <- as.factor(data_model_anot$paper_Transcriptome.Subtype)
+```
+```{r}
+# load some important packages
+library(mlbench)
+library(caret)
+library(tidyverse)
+library(randomForest)
+library(glmnet)
+```
+```{r}
+# Now we split the data into training and testing data sets
+set.seed(123)
+train_idx <- createDataPartition(data_model_anot$paper_Transcriptome.Subtype, p = 0.7, list = FALSE) # 70% of samples for training
+train <- data_model_anot[train_idx, ]
+test <- data_model_anot[-train_idx, ]
+```
+First we will train the logistic regression
+```{r}
+# at first separate the predictors from the subtypes as required for the input of glmnet
+train_predictors <- as.matrix(train[,1:2994])
+train_subtypes <- train$paper_Transcriptome.Subtype
+# now we want to find the optimal lambda for our lasso regularization via cross validation using cv.glmnet
+logistic_model_cv <- cv.glmnet(train_predictors, train_subtypes, family = "multinomial", alpha = 1)
+plot(logistic_model_cv)
+# the final model will use the optimal lambda found previously to predict the subtypes
+logistic_model <- glmnet(
+  train_predictors, train_subtypes, family = "multinomial", lambda = logistic_model_cv$lambda.min
+)
+# now we can test the model on our test data
+test_predictors <- as.matrix(test[,1:2994])
+test_subtypes <- test$paper_Transcriptome.Subtype
+
+pred <- predict(logistic_model, test_predictors, type = "class")
+pred <- as.factor(pred)
+```
+We also want to report a confusion matrix for the logistic regression now 
+```{r}
+confusionMatrix(data = pred, reference = test_subtypes)
+```
+It seems that NE is the hardest to classify. 
+
+Next we will take a look at the feature importance, i.e. the coefficients from the MLR. 
+```{r}
+coef_matrix <- coef(logistic_model)
+coef_subtype_CL <- coef_matrix$CL
+coef_subtype_ME <- coef_matrix$ME
+coef_subtype_NE <- coef_matrix$NE
+coef_subtype_PN <- coef_matrix$PN
+
+important_genes_CL <- data.frame(
+  gene = rownames(coef_subtype_CL),
+  coef = as.numeric(coef_subtype_CL))
+
+# remove intercept and order according to absolute wheight
+important_genes_CL <- important_genes_CL[2:2995,]
+important_genes_CL <- important_genes_CL[order(abs(important_genes_CL$coef), decreasing = TRUE),]
+
+important_genes_ME <- data.frame(
+  gene = rownames(coef_subtype_ME),
+  coef = as.numeric(coef_subtype_ME))
+
+# remove intercept and order according to absolute wheight
+important_genes_ME <- important_genes_ME[2:2995,]
+important_genes_ME <- important_genes_ME[order(abs(important_genes_ME$coef), decreasing = TRUE),]
+
+important_genes_NE <- data.frame(
+  gene = rownames(coef_subtype_NE),
+  coef = as.numeric(coef_subtype_NE))
+
+# remove intercept and order according to absolute wheight
+important_genes_NE <- important_genes_NE[2:2995,]
+important_genes_NE <- important_genes_NE[order(abs(important_genes_NE$coef), decreasing = TRUE),]
+
+important_genes_PN <- data.frame(
+  gene = rownames(coef_subtype_PN),
+  coef = as.numeric(coef_subtype_PN))
+
+# remove intercept and order according to absolute wheight
+important_genes_PN <- important_genes_PN[2:2995,]
+important_genes_PN <- important_genes_PN[order(abs(important_genes_PN$coef), decreasing = TRUE),]
+```
+Now we also want to visualize the genes for each subtype
+```{r}
+#store top 10 genes per subtype
+top_CL <- head(important_genes_CL, 10)
+top_ME <- head(important_genes_ME, 10)
+top_NE <- head(important_genes_NE, 10)
+top_PN <- head(important_genes_PN, 10)
+#plot top 10 genes per subtype 
+p_CL <- ggplot(top_CL, aes(x = reorder(gene, coef), y = coef)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "CL", x = "Gene", y = "Coefficient")
+
+p_ME <- ggplot(top_ME, aes(x = reorder(gene, coef), y = coef)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "ME", x = "Gene", y = "Coefficient")
+
+p_NE <- ggplot(top_NE, aes(x = reorder(gene, coef), y = coef)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "NE", x = "Gene", y = "Coefficient")
+
+p_PN <- ggplot(top_PN, aes(x = reorder(gene, coef), y = coef)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "PN", x = "Gene", y = "Coefficient")
+```
+```{r}
+# plot all plots in one figure 
+library(patchwork)
+(p_CL | p_ME) / (p_NE | p_PN)
+```
+Next to the logistic regression we also want to train a random forest model
+```{r}
+# we will use the train_predictors and train_subtypes to train the model. We have defined them alreacy for the logistic regression model
+rf_model <- randomForest(x = train_predictors, y = train_subtypes, ntree = 500, importance = TRUE, mtry = floor(sqrt(ncol(train_predictors))))
+```
+```{r}
+# predict on the test data
+pred_rf <- predict(rf_model, test_predictors)
+```
+```{r}
+# compute the confusion matrix 
+confusionMatrix(pred_rf, test_subtypes)
+```
+Also here the NE subtype seems to be the hardest to classify 
+
+Since there are no coefficients in RandomForest we can only extract the importance values
+```{r}
+importance_vals <- importance(rf_model)
+
+importance_df <- data.frame(
+  gene = rownames(importance_vals),
+  importance = importance_vals[, 1])
+
+importance_df <- importance_df[
+  order(importance_df$importance, decreasing = TRUE),]
+```
+Hence we will also plot the top important genes for the random forest model
+```{r}
+top_genes_rf <- head(importance_df, 20)
+
+ggplot(top_genes_rf, aes(x = reorder(gene, importance), y = importance)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Top Important Genes (Random Forest)",
+       x = "Gene", y = "Importance")
+```
+# Excersize 7 
+## Compare RF vs. MLR performance (accuracy, F1, per-class precision/recall).
+```{r}
+# first we define the predictions for each model again
+pred_rf = as.factor(pred_rf)
+pred_mlr = as.factor(pred)
+# we also define the actual subtypes again as factors 
+y_test <- as.factor(test_subtypes)
+# Now we can compute the confusion matrices
+cm_rf  <- confusionMatrix(pred_rf, y_test)
+cm_mlr <- confusionMatrix(pred_mlr, y_test)
+# From here we can compute the accuracy of both models 
+acc_rf  <- cm_rf$overall["Accuracy"]
+acc_mlr <- cm_mlr$overall["Accuracy"]
+# We can also compute the per class precision and recall
+rf_class <- data.frame(
+  Class = rownames(cm_rf$byClass),
+  Precision = cm_rf$byClass[, "Pos Pred Value"],
+  Recall    = cm_rf$byClass[, "Sensitivity"])
+
+mlr_class <- data.frame(
+  Class = rownames(cm_mlr$byClass),
+  Precision = cm_mlr$byClass[, "Pos Pred Value"],
+  Recall    = cm_mlr$byClass[, "Sensitivity"])
+```
+```{r}
+# In order to compute the F1 score we need the following function
+f1_score <- function(precision, recall) {(2 * precision * recall) / (precision + recall)}
+# Now we can calculate the F1 values
+rf_class$F1  <- f1_score(rf_class$Precision, rf_class$Recall)
+mlr_class$F1 <- f1_score(mlr_class$Precision, mlr_class$Recall)
+# To compute the F1 score per model we can average the F1 score wheighted respectively to the proportions of counts
+class_counts = as.numeric(table(y_test))
+
+weighted_f1_rf <- sum(rf_class$F1 * class_counts) / sum(class_counts)
+weighted_f1_mlr <- sum(mlr_class$F1 * class_counts) / sum(class_counts)
+```
+Now we can summarize the results in a single dataframe
+```{r}
+results_models <- data.frame(
+  Model = c("Random Forest", "Multinomial Logistic"),
+  Accuracy = c(acc_rf, acc_mlr),
+  Weighted_F1 = c(weighted_f1_rf, weighted_f1_mlr)
+)
+results_models
+```
+We can also compare the results for the different classes in each model
+```{r}
+rf_class$model <- "RF"
+mlr_class$model <- "MLR"
+
+comparison_classes <- rbind(rf_class, mlr_class)
+comparison_classes
+```
+This data can also be vizualized by plotting the F1 scores for each subtype
+```{r}
+ggplot(comparison_classes, aes(x = Class, y = F1, fill = model)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  theme_minimal() +
+  labs(title = "Per-class F1 comparison", y = "F1 score")
+```
+We can also plot the precision and recall for each class in each model in order to see which model performs the best (precision = TP / pred_positives, recall = TP / positives)
+```{r}
+ggplot(comparison_classes, aes(x = Recall, y = Precision, color = model)) +
+  geom_point(size = 3) +
+  theme_minimal() +
+  facet_wrap(~Class) +
+  labs(title = "Precision vs Recall by Class")
+```
+## Are predictive genes also DEGs? Venn diagram or UpSet plot.
+
+## Biological interpretation: which pathways are enriched in the top 10 predictive genes?
+To answer this question we will take the top 10 predictive genes for each subtype and perform an enrichment analysis 
+
+In order to answer this question we need to run an enrichment analysis on the top 10 predicitive genes for each subtype
+```{r}
+# load important packages 
+install.packages("BiocManager")
+BiocManager::install("clusterProfiler")
+BiocManager::install("org.Hs.eg.db")
+```
+```{r}
+library(clusterProfiler)
+library(org.Hs.eg.db)
+```
+
+GO analysis returns enriched biological pathways -> did not wiokrt well
+```{r}
+# first we extract the gene names of the top ten predicitive genes of the CL subtype
+genes_CL <- head(important_genes_CL$gene, 10)
+# next we convert the gene names into ids using the org.HS.eg.db data base 
+genes_CL_entrez <- bitr(genes_CL, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db
+)
+# Next we can run the gene ontology enrichment analysis 
+ego_CL <- enrichGO(
+  gene = genes_CL_entrez$ENTREZID,
+  OrgDb = org.Hs.eg.db,
+  keyType = "ENTREZID",
+  ont = "BP",          # Biological Process
+  pAdjustMethod = "BH",
+  readable = TRUE
+)
+# visualize the results
+dotplot(ego_CL, showCategory = 10)
+```
+```{r}
+# first we extract the gene names of the top ten predicitive genes of the ME subtype
+genes_ME <- head(important_genes_ME$gene, 10)
+# next we convert the gene names into ids using the org.HS.eg.db data base 
+genes_ME_entrez <- bitr(genes_ME, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db
+)
+# Next we can run the gene ontology enrichment analysis 
+ego_ME <- enrichGO(
+  gene = genes_ME_entrez$ENTREZID,
+  OrgDb = org.Hs.eg.db,
+  keyType = "ENTREZID",
+  ont = "BP",          # Biological Process
+  pAdjustMethod = "BH",
+  readable = TRUE
+)
+# visualize the results
+dotplot(ego_ME, showCategory = 10)
+```
+```{r}
+# first we extract the gene names of the top ten predicitive genes of the NE subtype
+genes_NE <- head(important_genes_NE$gene, 10)
+# next we convert the gene names into ids using the org.HS.eg.db data base 
+genes_NE_entrez <- bitr(genes_NE, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db
+)
+# Next we can run the gene ontology enrichment analysis 
+ego_NE <- enrichGO(
+  gene = genes_NE_entrez$ENTREZID,
+  OrgDb = org.Hs.eg.db,
+  keyType = "ENTREZID",
+  ont = "BP",          # Biological Process
+  pAdjustMethod = "BH",
+  readable = TRUE
+)
+# visualize the results
+dotplot(ego_NE, showCategory = 10)
+```
+```{r}
+# first we extract the gene names of the top ten predicitive genes of the PN subtype
+genes_PN <- head(important_genes_PN$gene, 10)
+# next we convert the gene names into ids using the org.HS.eg.db data base 
+genes_PN_entrez <- bitr(genes_PN, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db
+)
+# Next we can run the gene ontology enrichment analysis 
+ego_PN <- enrichGO(
+  gene = genes_PN_entrez$ENTREZID,
+  OrgDb = org.Hs.eg.db,
+  keyType = "ENTREZID",
+  ont = "BP",          # Biological Process
+  pAdjustMethod = "BH",
+  readable = TRUE
+)
+# visualize the results
+dotplot(ego_PN, showCategory = 10)
+```
+
+Since GO did not work correctly we decided to run GSEA as well 
+```{r}
+BiocManager::install("enrichplot")
+BiocManager::install("msigdbr")
+```
+Next we need to bring the genes into a ranked list format based on their coefficient
+```{r}
+ranked_CL_genes <- important_genes_CL %>% arrange(desc(abs(coef)))
+gene_list_CL <- ranked_CL_genes$coef
+names(gene_list_CL) <- ranked_CL_genes$gene
+# now convert gene names to entrez ids again 
+gene_df_CL <- bitr(
+  names(gene_list_CL),
+  fromType = "SYMBOL",
+  toType = "ENTREZID",
+  OrgDb = org.Hs.eg.db
+)
+# now rename the ranked list using the entrez ids
+gene_list_CL <- gene_list_CL[gene_df_CL$SYMBOL]
+names(gene_list_CL) <- gene_df_CL$ENTREZID
+
+gene_list_CL = sort(gene_list_CL, decreasing = T)
+# this way we can now compute the gsea
+library(msigdbr)
+
+hallmark <- msigdbr(species = "Homo sapiens", category = "H")
+
+hallmark_df <- hallmark[, c("gs_name", "gene_symbol")]
+
+gsea_CL_hallmark <- GSEA(
+  geneList = gene_list_CL,
+  TERM2GENE = hallmark_list,
+  pvalueCutoff = 0.05
+)
+```
+
+
+
 
