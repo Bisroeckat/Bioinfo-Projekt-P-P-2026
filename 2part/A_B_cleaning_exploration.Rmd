@@ -2,4 +2,34 @@
 title: "A_B_cleaning_exploration"
 output: html_document
 ---
+# Annotation cleaning
+## Tidy the annotation file to keep only curated, paper-level columns.
+```{r}
+# at first we only select the paper-level columns
+anot_clean <- gbm_anot_clean[, c("barcode", grep("^paper_", names(gbm_anot_clean),
+value = TRUE))]
+```
+This way we keep 52 annotation columns containing information on whether certain analysis has been performed, where the tissue is from, but also numerical values like age or mutation count. 
+
+# Clinical Variable Exploration
+## Explore paper_IDH.status, paper_MGMT.promoter.status, paper_Grade, paper_Age..years.at.diagnosis
+```{r}
+summary(anot_clean[c("paper_IDH.status", "paper_MGMT.promoter.status", "paper_Grade", "paper_Age..years.at.diagnosis.")])
+```
+## Tabulate paper_Karnofsky.Performance.Score (functional status) and paper_Mutation.Count.
+```{r}
+table(anot_clean$paper_Karnofsky.Performance.Score)
+table(anot_clean$paper_Mutation.Count)
+```
+## Investigate paper_Telomere.Maintenance (ALT vs. TERT) — does it associate with subtype?
+```{r}
+# create a count table counting telomere Mainrtainance type in each subtype
+tab_telomere_subtype <- table(anot_clean$paper_Telomere.Maintenance, anot_clean$paper_Transcriptome.Subtype)
+tab_telomere_subtype
+# testing association in fisher exact test
+test_telomere_subtype <- fisher.test(tab_telomere_subtype)
+test_telomere_subtype
+```
+ATRX is strongly associated with PN, TERT seems associated with CL and ME equally. The Fisher Exact Test tells us that there is a significant association between Telomere.Maintenance and Subtype
+
 
