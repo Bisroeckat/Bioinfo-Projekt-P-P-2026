@@ -29,7 +29,8 @@ colnames(t_gbm_exp_clean) <- gbm_exp_clean$gene
 t_gbm_exp_clean <- as.data.frame(t_gbm_exp_clean)
 t_gbm_exp_clean$barcode <- rownames(t_gbm_exp_clean)
 
-annot_t_gbm_exp_clean <- merge(t_gbm_exp_clean, gbm_anot_clean[, c("paper_Transcriptome.Subtype", "paper_IDH.status", "barcode")], by = "barcode")
+annot_t_gbm_exp_clean <- merge(t_gbm_exp_clean, gbm_anot_clean[, c("paper_Transcriptome.Subtype", "paper_IDH.status", "barcode","paper_Grade","paper_MGMT.promoter.status")], by = "barcode")
+rownames(annot_t_gbm_exp_clean) <- annot_t_gbm_exp_clean$barcode
 ```
 Compute QQ-Plot on distribution of expression values within samples, grouped by subtype
 ```{r}
@@ -157,75 +158,193 @@ p3 <- ggplot(plot_pca_gbm_norm_df,
 # Exercise 4:
 ##Top DEGs between subtypes (one-vs-rest Wilcoxon, BH-corrected). Focus on CL vs. ME and PN vs. NE contrasts.
 ```{r}
-# ----------------------------
-# 1. Pool DEGs across subtypes
-# ----------------------------
-all_deg <- do.call(rbind, results_list)
+# Identify gene columns (exclude annotation columns)
+gene_cols <- setdiff(
+  colnames(annot_t_gbm_exp_clean),
+  c("paper_Transcriptome.Subtype", "paper_IDH.status", "barcode","paper_Grade","paper_MGMT.promoter.status","barcode")
+)
 
-# Rank by strongest effect size
-all_deg <- all_deg[order(-abs(all_deg$logFC)), ]
-top50_genes <- head(all_deg$gene, 50)
-row.names(annot_t_gbm_exp_clean) <- annot_t_gbm_exp_clean$barcode
-row.names(gbm_anot_clean) <- gbm_anot_clean$barcode
+results_list <- list()
 
-# ----------------------------
+for (subtype in c("CL","ME","PN","NE")) {
+  
+  # Define groups
+  group1_idx <- annot_t_gbm_exp_clean$paper_Transcriptome.Subtype == subtype
+  group2_idx <- annot_t_gbm_exp_clean$paper_Transcriptome.Subtype != subtype
+  
+  res_subtype <- data.frame(
+    gene = gene_cols,
+    subtype = subtype,
+    p_value = NA,
+    logFC = NA
+  )
+  
+  for (g in seq_along(gene_cols)) {
+    
+    gene <- gene_cols[g]
+    
+    x <- annot_t_gbm_exp_clean[group1_idx, gene]
+    y <- annot_t_gbm_exp_clean[group2_idx, gene]
+    
+    # Wilcoxon test
+    wt <- wilcox.test(x, y, alternative = "two.sided")
+    
+    # Store results
+    res_subtype$p_value[g] <- wt$p.value
+    
+    # Optional: log fold change (median-based)
+    res_subtype$logFC[g] <- median(x, na.rm = TRUE) - median(y, na.rm = TRUE)
+  }
+  
+  # Adjust p-values (important!)
+  res_subtype$padj <- p.adjust(res_subtype$p_value, method = "BH")
+  
+  results_list[[subtype]] <- res_subtype
+}
+
+# Combine all results
+final_results <- do.call(rbind, results_list)
+```
+```{r}
+library(dplyr)
+
+top50 <- final_results %>%
+  group_by(subtype) %>%
+  arrange(desc(logFC), .by_group = TRUE) %>%
+  slice_head(n = 50) %>%
+  mutate(rank = row_number()) %>%
+  ungroup()
+
+top50_wide <- top50 %>%
+  select(subtype, rank, gene) %>%
+  tidyr::pivot_wider(names_from = subtype, values_from = gene) %>%
+  arrange(rank)
+```
+
+
+```{r}
+# -----------------------------
+# 1. Top 50 genes (global DEGs)
+# -----------------------------
+top50_genes <- final_results %>%
+  arrange(padj, desc(abs(logFC))) %>%
+  distinct(gene, .keep_all = TRUE) %>%
+  slice_head(n = 50) %>%
+  pull(gene)
+
+# -----------------------------
 # 2. Expression matrix
-# ----------------------------
+# -----------------------------
 expr_mat <- annot_t_gbm_exp_clean[, top50_genes]
+expr_mat <- t(as.matrix(expr_mat))
+colnames(expr_mat) <- annot_t_gbm_exp_clean$barcode
 
-# Scale per gene (important for heatmap patterns)
-expr_mat_scaled <- scale(expr_mat)
-
-# ----------------------------
-# 3. Annotation data
-# ----------------------------
-ann <- gbm_anot_clean[rownames(expr_mat_scaled), c(
+# -----------------------------
+# 3. Annotation (CLEAN + SAFE)
+# -----------------------------
+annotation_col <- annot_t_gbm_exp_clean[, c(
   "paper_Transcriptome.Subtype",
   "paper_IDH.status",
   "paper_MGMT.promoter.status",
   "paper_Grade"
 )]
+annotation_col <- data.frame(lapply(annotation_col, function(x) {
+  x <- trimws(as.character(x))
+  x[is.na(x)] <- "Unknown"
+  factor(x)
+}))
+rownames(annotation_col) <- annot_t_gbm_exp_clean$barcode
 
+# -----------------------------
+# 4. Align samples
+# -----------------------------
+common_samples <- intersect(colnames(expr_mat), rownames(annotation_col))
+expr_mat       <- expr_mat[, common_samples]
+annotation_col <- annotation_col[common_samples, ]
 
-# ----------------------------
-# 4. Handle NA values
-# ----------------------------
-ann$paper_Transcriptome.Subtype[is.na(ann$paper_Transcriptome.Subtype)] <- "Unknown"
-ann$paper_IDH.status[is.na(ann$paper_IDH.status)] <- "Unknown"
-ann$paper_MGMT.promoter.status[is.na(ann$paper_MGMT.promoter.status)] <- "Unknown"
-ann$paper_Grade[is.na(ann$paper_Grade)] <- "Unknown"
+# -----------------------------
+# 5. Scaling (gene-wise = row-wise)
+# -----------------------------
+expr_mat_scaled <- t(scale(t(expr_mat)))
+expr_mat_scaled[!is.finite(expr_mat_scaled)] <- 0
 
-row.names(ann) <- gbm_anot_clean$barcode
-# Convert to factors
-#ann$paper_Transcriptome.Subtype <- as.factor(ann$paper_Transcriptome.Subtype)
-#ann$paper_IDH.status <- as.factor(ann$paper_IDH.status)
-#ann$paper_MGMT.promoter.status <- as.factor(ann$paper_MGMT.promoter.status)
-#ann$paper_Grade <- as.factor(ann$paper_Grade)
-
-# ----------------------------
-# 5. Optional: annotation colors
-# ----------------------------
+# -----------------------------
+# 6. Annotation colors
+# -----------------------------
 ann_colors <- list(
-  paper_Transcriptome.Subtype = c(CL="red", ME="blue", NE="green", PN="purple", Unknown="grey"),
-  paper_IDH.status = c(Mutant="orange", WT="grey", Unknown="black"),
-  paper_MGMT.promoter.status = c(Methylated="darkgreen", Unmethylated="brown", Unknown="black"),
-  paper_Grade = c(G4="red", Unknown="black")
+  paper_Transcriptome.Subtype    = c(CL="red", ME="blue", PN="green", NE="purple"),
+  paper_IDH.status               = c(WT="black", Mutant="orange", Unknown="grey"),
+  paper_MGMT.promoter.status     = c(Methylated="darkgreen", Unmethylated="red", Unknown="grey"),
+  paper_Grade                    = c(G4="brown", Unknown="grey")
+)
+
+# -----------------------------
+# 7. Sanity check
+# -----------------------------
+stopifnot(all(colnames(expr_mat_scaled) == rownames(annotation_col)))
+
+# -----------------------------
+# 8. Heatmap
+# -----------------------------
+pheatmap(
+  expr_mat_scaled,
+  annotation_col     = annotation_col,
+  annotation_colors  = ann_colors,
+  show_rownames      = FALSE,
+  show_colnames      = FALSE,
+  clustering_method  = "complete",
+  scale              = "none"
 )
 ```
-
 ```{r}
-pheatmap(
-  expr_mat,
-  annotation_col = ann$paper_IDH.status,
-  annotation_colors = ann_colors,
-  show_rownames = FALSE,
-  show_colnames = TRUE,
-  cluster_rows = TRUE,
-  cluster_cols = TRUE,
-  scale = "none"
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# -----------------------------
+# 1. Landmark genes
+# -----------------------------
+genes <- c("EGFR", "CHI3L1", "MET", "PDGFRA", "IDH1", "NEFL", "SYT1")
+
+# -----------------------------
+# 2. Reshape to long format
+# -----------------------------
+df_long <- annot_t_gbm_exp_clean %>%
+  select(all_of(c("paper_Transcriptome.Subtype", genes))) %>%
+  pivot_longer(
+    cols = all_of(genes),
+    names_to = "gene",
+    values_to = "expression"
+  )
+
+# -----------------------------
+# 3. Clean subtype factor order
+# -----------------------------
+df_long$paper_Transcriptome.Subtype <- factor(
+  df_long$paper_Transcriptome.Subtype,
+  levels = c("CL", "ME", "PN", "NE")
 )
 
-
+# -----------------------------
+# 4. Boxplot (faceted by gene)
+# -----------------------------
+ggplot(df_long, aes(
+  x = paper_Transcriptome.Subtype,
+  y = expression,
+  fill = paper_Transcriptome.Subtype
+)) +
+  geom_boxplot(outlier.size = 0.5) +
+  facet_wrap(~ gene, scales = "free_y") +
+  theme_bw() +
+  labs(
+    x = "Subtype",
+    y = "Expression"
+  ) +
+  theme(
+    legend.position = "none",
+    strip.text = element_text(face = "bold")
+  )
 ```
 
 
