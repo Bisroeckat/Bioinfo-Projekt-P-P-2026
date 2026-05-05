@@ -263,6 +263,79 @@ ggplot(comparison_classes, aes(x = Recall, y = Precision, color = model)) +
 ```
 ## Are predictive genes also DEGs? Venn diagram or UpSet plot.
 
+To answer this question we will compare the top DEGs (differentially expressed in a subtype compared to the others) to the top predictive genes for the respective subtypes
+```{r}
+# load all predictors i.e. all genes which have a coefficient not equal to 0 in the model
+predictors_CL <- important_genes_CL$gene[which(important_genes_CL$coef != 0)]
+predictors_ME <- important_genes_ME$gene[which(important_genes_ME$coef != 0)]
+predictors_NE <- important_genes_NE$gene[which(important_genes_NE$coef != 0)]
+predictors_PN <- important_genes_PN$gene[which(important_genes_PN$coef != 0)]
+# next we load the top DEGs for each subtype which were previously identified
+top50_DEGs_subtype <- read_csv(here("data/top50_genes_per_subtype.csv"))
+# load the DEGs for each subtype separately (50 per subtype)
+DEGs_CL <- top50_DEGs_subtype$CL
+DEGs_ME <- top50_DEGs_subtype$ME
+DEGs_NE <- top50_DEGs_subtype$NE
+DEGs_PN <- top50_DEGs_subtype$PN
+```
+Next we want to visualize the similarity in Venn Diagrams
+```{r}
+install.packages("ggVennDiagram")
+library(ggVennDiagram)
+```
+```{r}
+# we store both the DEGs and the predictors in a lsit for each subtype
+venn_CL <- list(
+  Predictors = predictors_CL,
+  DEGs = DEGs_CL
+)
+
+venn_ME <- list(
+  Predictors = predictors_ME,
+  DEGs = DEGs_ME
+)
+
+venn_NE <- list(
+  Predictors = predictors_NE,
+  DEGs = DEGs_NE
+)
+
+venn_PN <- list(
+  Predictors = predictors_PN,
+  DEGs = DEGs_PN
+)
+```
+
+```{r}
+# then we plot and visualze the venn diagrams
+p1 <- ggVennDiagram(venn_CL) + ggtitle("CL") +
+  scale_fill_gradient(low = "white", high = "blue") +  # effectively removes gradient
+  theme(legend.position = "none") +
+  coord_cartesian(clip = "off")
+
+p2 <- ggVennDiagram(venn_ME) + ggtitle("ME") +
+  scale_fill_gradient(low = "white", high = "blue") +  # effectively removes gradient
+  theme(legend.position = "none") +
+  coord_cartesian(clip = "off")
+
+p3 <- ggVennDiagram(venn_NE) + ggtitle("NE") +
+  scale_fill_gradient(low = "white", high = "blue") +  # effectively removes gradient
+  theme(legend.position = "none") +
+  coord_cartesian(clip = "off")
+
+p4 <- ggVennDiagram(venn_PN) + ggtitle("PN") +
+  scale_fill_gradient(low = "white", high = "blue") +  # effectively removes gradient
+  theme(legend.position = "none") +
+  coord_cartesian(clip = "off")
+
+combined_plot <- (p1 | p2) / (p3 | p4)
+combined_plot
+```
+
+
+
+
+
 ## Biological interpretation: which pathways are enriched in the top 10 predictive genes?
 To answer this question we will take the top 10 predictive genes for each subtype and perform an enrichment analysis 
 
@@ -278,7 +351,7 @@ library(clusterProfiler)
 library(org.Hs.eg.db)
 ```
 
-GO analysis returns enriched biological pathways -> did not wiokrt well
+GO analysis returns enriched biological pathways -> did not work well
 ```{r}
 # first we extract the gene names of the top ten predicitive genes of the CL subtype
 genes_CL <- head(important_genes_CL$gene, 10)
@@ -359,35 +432,34 @@ BiocManager::install("msigdbr")
 ```
 Next we need to bring the genes into a ranked list format based on their coefficient
 ```{r}
-ranked_CL_genes <- important_genes_CL %>% arrange(desc(abs(coef)))
+# rank genes (IMPORTANT: use signed values, not abs)
+ranked_CL_genes <- important_genes_CL %>%
+  arrange(desc(coef))
+
+# create named vector (SYMBOL)
 gene_list_CL <- ranked_CL_genes$coef
 names(gene_list_CL) <- ranked_CL_genes$gene
-# now convert gene names to entrez ids again 
-gene_df_CL <- bitr(
-  names(gene_list_CL),
-  fromType = "SYMBOL",
-  toType = "ENTREZID",
-  OrgDb = org.Hs.eg.db
-)
-# now rename the ranked list using the entrez ids
-gene_list_CL <- gene_list_CL[gene_df_CL$SYMBOL]
-names(gene_list_CL) <- gene_df_CL$ENTREZID
 
-gene_list_CL = sort(gene_list_CL, decreasing = T)
-# this way we can now compute the gsea
-library(msigdbr)
+gene_list_CL <- sort(gene_list_CL, decreasing = TRUE)
 
+# remove all genes whichs values are 0
+
+gene_list_CL <- gene_list_CL[which(gene_list_CL != 0)]
+
+# hallmark gene sets (SYMBOL)
 hallmark <- msigdbr(species = "Homo sapiens", category = "H")
 
-hallmark_df <- hallmark[, c("gs_name", "gene_symbol")]
+hallmark_df <- hallmark %>%
+  dplyr::select(gs_name, gene_symbol)
 
+# GSEA
 gsea_CL_hallmark <- GSEA(
   geneList = gene_list_CL,
-  TERM2GENE = hallmark_list,
-  pvalueCutoff = 0.05
+  TERM2GENE = hallmark_df,
+  pvalueCutoff = 1
 )
 ```
-
+-> did not find any gene set where the genes are enriched in 
 
 
 
