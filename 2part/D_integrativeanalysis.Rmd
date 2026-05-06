@@ -3,3 +3,180 @@ title: "D_integrativeanalysis"
 output: html_document
 ---
 
+```{r}
+#load packages
+library(dplyr)
+library(ggplot2)
+library(here)
+library(edgeR)
+library(patchwork)
+library(pheatmap)
+```
+
+
+```{r}
+# Remove gene column and set rownames to gene names
+load(here("data/GBM_data.RData"))
+t_gbm_exp_clean <- gbm_exp_clean
+t_gbm_exp_clean <- t_gbm_exp_clean[,-1]
+t_gbm_exp_clean <- t(t_gbm_exp_clean)
+colnames(t_gbm_exp_clean) <- gbm_exp_clean$gene
+```
+
+```{r}
+t_gbm_exp_clean <- as.data.frame(t_gbm_exp_clean)
+t_gbm_exp_clean$barcode <- rownames(t_gbm_exp_clean)
+
+annot_t_gbm_exp_clean <- merge(t_gbm_exp_clean, gbm_anot_clean[, c("paper_Transcriptome.Subtype", "paper_IDH.status", "barcode","paper_Grade","paper_MGMT.promoter.status")], by = "barcode")
+rownames(annot_t_gbm_exp_clean) <- annot_t_gbm_exp_clean$barcode
+```
+## Correlate top DEGs from Part I with continuous clinical variables (age, etc.) using Spearman's rho
+```{r}
+# define genes and variables
+genes <- c("EGFR", "LTF", "RN7SL126P","GPR17")
+variables <- c("paper_Age..years.at.diagnosis.", "paper_Survival..months.","paper_Mutation.Count","paper_ABSOLUTE.ploidy")
+
+# prepare empty matrix
+result_matrix <- matrix(NA, 
+                        nrow = length(genes), 
+                        ncol = length(variables),
+                        dimnames = list(genes, variables))
+
+# Loop
+for (gene in genes) {
+  for (variable in variables) {
+    result_matrix[gene, variable] <- cor(gbm_anot_clean[[variable]],
+                                         t_gbm_exp_clean[[gene]],
+                                         method = "spearman",
+                                         use = "complete.obs")
+  }
+}
+
+result_matrix
+```
+##  Build a multimodal classifier: combine top expression features with key clinical features. Does adding clinical data improve predictive performance?
+
+```{r}
+# Top Expressionsfeatures (z.B. die Gene mit höchster Varianz)
+gene_vars <- apply(t_gbm_exp_clean, 2, var)
+top_genes <- names(sort(gene_vars, decreasing = TRUE)[1:50])
+
+# Expressionsdaten der Top-Gene
+expr_features <- t_gbm_exp_clean[, top_genes]
+
+# Klinische Features
+clinical_features <- gbm_anot_clean[, c("paper_Age..years.at.diagnosis.", 
+                                         "paper_Survival..months.","paper_Mutation.Count",
+                                        "paper_Percent.aneuploidy",
+                                        "paper_TERT.expression..log2.",
+                                        )]
+
+# Zielvariable (z.B. Tumorsubtyp oder Überlebensstatus)
+labels <- gbm_anot_clean$paper_IDH.status  # Beispiel
+```
+
+
+```{r}
+library(randomForest)
+
+# Fehlende Werte entfernen (randomForest verträgt keine NAs)
+df_expr     <- na.omit(data.frame(expr_features, label = as.factor(labels)))
+df_clinical <- na.omit(data.frame(clinical_features, label = as.factor(labels)))
+df_combined <- na.omit(data.frame(expr_features, clinical_features, label = as.factor(labels)))
+
+# Modelle trainieren
+model_expr     <- randomForest(label ~ ., data = df_expr)
+model_clinical <- randomForest(label ~ ., data = df_clinical)
+model_combined <- randomForest(label ~ ., data = df_combined)
+
+# OOB Accuracy (= 1 - OOB Error)
+acc_expr     <- 1 - model_expr$err.rate[500, "OOB"]
+acc_clinical <- 1 - model_clinical$err.rate[500, "OOB"]
+acc_combined <- 1 - model_combined$err.rate[500, "OOB"]
+
+# Übersichtstabelle
+comparison <- data.frame(
+  Modell    = c("Expression only", "Clinical only", "Combined"),
+  OOB_Error = c(model_expr$err.rate[500, "OOB"],
+                model_clinical$err.rate[500, "OOB"],
+                model_combined$err.rate[500, "OOB"]),
+  Accuracy  = c(acc_expr, acc_clinical, acc_combined)
+)
+print(comparison)
+```
+```{r}
+
+# Verbesserung durch klinische Daten quantifizieren
+improvement <- acc_combined - acc_expr
+cat("Verbesserung durch klinische Daten:", round(improvement * 100, 2), "%\n")
+
+# Confusion Matrix für jedes Modell
+cat("\n--- Expression only ---\n")
+print(model_expr$confusion)
+
+cat("\n--- Clinical only ---\n")
+print(model_clinical$confusion)
+
+cat("\n--- Combined ---\n")
+print(model_combined$confusion)
+
+# Visualisierung
+barplot(comparison$Accuracy,
+        names.arg = comparison$Modell,
+        ylim = c(0, 1),
+        col = c("steelblue", "coral", "forestgreen"),
+        ylab = "OOB Accuracy",
+        main = "Does adding clinical data improve performance?")
+abline(h = max(acc_expr, acc_clinical), lty = 2, col = "gray")
+```
+
+```{r}
+library(glmnet)
+
+# Nur vollständige Zeilen behalten
+complete_idx <- complete.cases(clinical_features) & !is.na(labels)
+
+clinical_matrix <- as.matrix(clinical_features[complete_idx, ])
+label_factor    <- as.numeric(as.factor(labels[complete_idx])) - 1
+
+lasso_model <- cv.glmnet(clinical_matrix, label_factor,
+                          alpha = 1,
+                          family = "binomial")
+
+# LASSO mit Cross-Validation (findet bestes Lambda automatisch)
+lasso_model <- cv.glmnet(clinical_matrix, label_factor, 
+                          alpha = 1,          # alpha=1 ist LASSO
+                          family = "binomial")
+
+# Koeffizienten beim besten Lambda
+lasso_coefs <- coef(lasso_model, s = "lambda.min")
+print(lasso_coefs)
+
+# Nur Variablen mit Koeffizient != 0 behalten
+selected_clinical <- rownames(lasso_coefs)[which(lasso_coefs != 0)]
+selected_clinical <- selected_clinical[selected_clinical != "(Intercept)"]
+cat("Ausgewählte klinische Variablen:\n")
+print(selected_clinical)
+```
+
+```{r}
+# Nur die von LASSO ausgewählten klinischen Features
+clinical_selected <- clinical_features[, selected_clinical, drop = FALSE]
+
+# Datensätze neu zusammenstellen
+df_clinical_lasso <- na.omit(data.frame(clinical_selected, label = as.factor(labels)))
+df_combined_lasso <- na.omit(data.frame(expr_features, clinical_selected, label = as.factor(labels)))
+
+# Modelle trainieren
+model_clinical_lasso <- randomForest(label ~ ., data = df_clinical_lasso, ntree = 500)
+model_combined_lasso <- randomForest(label ~ ., data = df_combined_lasso, ntree = 500)
+
+# Vergleich
+data.frame(
+  Modell = c("Expression only", "Clinical (LASSO)", "Combined (LASSO)"),
+  Accuracy = c(1 - model_expr$err.rate[500, "OOB"],
+               1 - model_clinical_lasso$err.rate[500, "OOB"],
+               1 - model_combined_lasso$err.rate[500, "OOB"])
+)
+```
+
