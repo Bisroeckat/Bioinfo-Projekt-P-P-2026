@@ -2,4 +2,218 @@
 title: "C_featureclassification"
 output: html_document
 ---
+# Step C: Clinical Feature Classification -- Predict a binary or multi-class clinical outcome using clinical variables only
+```{r}
+# at first we only select the paper-level columns
+anot_clean <- gbm_anot_clean[, c("barcode", grep("^paper_", names(gbm_anot_clean),
+value = TRUE))]
+```
+## Define the outcome variable and apply appropriate encoding.
+
+We have decided to predict the clinical variable paper_IDH.status (Isocitrate Dehydrogenase) which is binary and can either be WT or mutant. IDH mutations are generally associated with better disease-outcome making it an interesting variable to predict.
+```{r}
+# At first lets examine the paper_IDH.status column
+summary(anot_clean$paper_IDH.status)
+table(anot_clean$paper_IDH.status)
+sum(is.na(anot_clean$paper_IDH.status))
+```
+This shows that for 305 out of 325 there is a value in the respective column. Out of these 305, 285 patients have the WT IDH status and 20 exhibit a mutant version. 
+
+## Select a small set of meaningful features and handle missing values.
+```{r}
+# im ersten Schritt definieren wir unsere target variable und einige scheinbar sinnvolle features, welche nicht direkt mit dem IDH status zusammenhängen -> leakage vermeiden
+target <- "paper_IDH.status"
+features <- c(
+  "paper_Age..years.at.diagnosis.",
+  "paper_Gender",
+  "paper_Histology",
+  "paper_Grade",
+  "paper_Karnofsky.Performance.Score",
+  "paper_Mutation.Count",
+  "paper_Percent.aneuploidy",
+  "paper_MGMT.promoter.status",
+  "paper_Chr.7.gain.Chr.10.loss",
+  "paper_Chr.19.20.co.gain",
+  "paper_TERT.promoter.status",
+  "paper_TERT.expression..log2.",
+  "paper_ATRX.status",
+  "paper_BRAF.V600E.status",
+  "paper_ABSOLUTE.purity",
+  "paper_ABSOLUTE.ploidy",
+  "paper_ESTIMATE.stromal.score",
+  "paper_ESTIMATE.immune.score"
+)
+# then we can define a new data frame containing only the variables in the features and the target
+anot_clean_IDH <- anot_clean %>%
+  dplyr::select(all_of(c(target, features))) %>%
+  mutate(across(where(is.character), as.factor)) %>%
+  mutate(paper_IDH.status = as.factor(paper_IDH.status))
+```
+```{r}
+# next we can take a look at the missing values in each variable
+library(naniar)
+miss_var_summary(anot_clean_IDH)
+vis_miss(anot_clean_IDH)
+```
+Since paper_TERT.promoter.status has 85% missing values we will exclude it from further analysis and imputation
+```{r}
+anot_clean_IDH2 <- anot_clean_IDH[which(names(anot_clean_IDH) != "paper_TERT.promoter.sta")]
+```
+For the other variables we will perform imputations, meaning that missing values will be replaced by computationally determinded values.
+```{r}
+# imputation with mice package chooses appropriate imputation strategy for each variable (numerical, logreg, polyreg, polr)
+library(mice)
+imp <- mice(anot_clean_IDH2, m = 1, method = NULL, seed = 42, printFlag = FALSE)
+# now we can extract the complete data set with no missing values
+anot_clean_IDH_complete <- complete(imp, 1)
+miss_var_summary(anot_clean_IDH_complete)
+```
+We will exclude paper Histology and paper Grade since they only take one value which also causes them to fail at the imputation.
+```{r}
+anot_clean_IDH_complete <- anot_clean_IDH_complete %>% dplyr::select(-c(paper_Histology, paper_Grade))
+```
+We now have a dataframe with no missing values. 
+##  Train/test split (70/30 or 5-fold CV). Fit: Logistic Regression, Random Forest, k-NN.
+```{r}
+library(caret)
+
+# first we need to split the data into a testing and training dataset
+set.seed(42)
+train_index <- createDataPartition(anot_clean_IDH_complete$paper_IDH.status, 
+                                   p = 0.7, list = FALSE)
+train_data_IDH <- anot_clean_IDH_complete[train_index, ]
+test_data_IDH  <- anot_clean_IDH_complete[-train_index, ]
+
+# alternatively we can also do a 5-fold crossvalidation
+ctrl <- trainControl(method = "cv", number = 5,
+                     classProbs = TRUE,
+                     summaryFunction = twoClassSummary)
+
+# first fit the logistic regression
+set.seed(42)
+model_lr <- caret::train(paper_IDH.status ~ ., data = train_data_IDH, method = "glmnet", family = "binomial", trControl = ctrl, metric = "ROC",tuneGrid = expand.grid(alpha = 1,lambda = seq(0.0001, 1, length = 50))) # with lasso regularization
+
+# next fit the random forest model
+set.seed(42)
+model_rf <- caret::train(paper_IDH.status ~ ., data = train_data_IDH,
+                  method = "rf",
+                  trControl = ctrl, metric = "ROC", 
+                  tuneLength = 10) # tunes mtry
+
+# lastly fit the knn model
+set.seed(42)
+model_knn <- caret::train(paper_IDH.status ~ ., data = train_data_IDH,
+                   method = "knn",
+                   preProcess = c("center", "scale"),  # wichtig für kNN!
+                   trControl = ctrl, metric = "ROC", 
+                   tuneLength = 10) # tunes k
+```
+## Report confusion matrices, accuracy, sensitivity/specificity, and AUC-ROC.
+```{r}
+# at first we predict the IDH statuses of the test data patients
+pred_lr  <- predict(model_rf,  test_data_IDH)
+pred_rf  <- predict(model_rf,  test_data_IDH)
+pred_knn <- predict(model_knn, test_data_IDH)
+
+# for the ROC curve we need the probabilities for the predicted statuses as well
+prob_lr  <- predict(model_lr,  test_data_IDH, type = "prob")[, "Mutant"]
+prob_rf  <- predict(model_rf,  test_data_IDH, type = "prob")[, "Mutant"]
+prob_knn <- predict(model_knn, test_data_IDH, type = "prob")[, "Mutant"]
+```
+Next we can compute the confusion matrices 
+```{r}
+cm_lr  <- confusionMatrix(pred_lr,  test_data_IDH$paper_IDH.status, positive = "Mutant")
+cm_rf  <- confusionMatrix(pred_rf,  test_data_IDH$paper_IDH.status, positive = "Mutant")
+cm_knn <- confusionMatrix(pred_knn, test_data_IDH$paper_IDH.status, positive = "Mutant")
+
+cm_lr
+cm_rf
+cm_knn
+```
+Next we can also compute the AUC of the ROC curves
+```{r}
+# first we install a package to compute the ROC curves
+library(pROC)
+# we compute the roc curves for each model
+roc_lr  <- roc(test_data_IDH$paper_IDH.status, prob_lr,  levels = c("WT", "Mutant"))
+roc_rf  <- roc(test_data_IDH$paper_IDH.status, prob_rf,  levels = c("WT", "Mutant"))
+roc_knn <- roc(test_data_IDH$paper_IDH.status, prob_knn, levels = c("WT", "Mutant"))
+# from the roc curves we can also extract the aucs
+auc(roc_lr)
+auc(roc_rf)
+auc(roc_knn)
+# additionally we can plot the ROC curves and the respective AUCs in a single plot
+plot(roc_lr,  col = "blue",  main = "ROC Curves")
+plot(roc_rf,  col = "red",   add = TRUE)
+plot(roc_knn, col = "green", add = TRUE)
+legend("bottomright", 
+       legend = c(paste("LR  AUC =", round(auc(roc_lr), 3)),
+                  paste("RF  AUC =", round(auc(roc_rf), 3)),
+                  paste("kNN AUC =", round(auc(roc_knn), 3))),
+       col = c("blue", "red", "green"), lwd = 2)
+```
+Lastly we can combine all the results in a single dataframe
+```{r}
+results_summary <- tibble(
+  Model       = c("Logistic Regression", "Random Forest", "k-NN"),
+  Accuracy    = c(cm_lr$overall["Accuracy"],
+                  cm_rf$overall["Accuracy"],
+                  cm_knn$overall["Accuracy"]),
+  Sensitivity = c(cm_lr$byClass["Sensitivity"],
+                  cm_rf$byClass["Sensitivity"],
+                  cm_knn$byClass["Sensitivity"]),
+  Specificity = c(cm_lr$byClass["Specificity"],
+                  cm_rf$byClass["Specificity"],
+                  cm_knn$byClass["Specificity"]),
+  AUC         = c(as.numeric(auc(roc_lr)),
+                  as.numeric(auc(roc_rf)),
+                  as.numeric(auc(roc_knn)))
+) %>% mutate(across(where(is.numeric), ~ round(., 3)))
+
+print(results_summary)
+```
+## Feature importance from RF (variable importance) and Logistic Regression (coefficients).
+At first we will take a look at the variable importances from the RF
+```{r}
+library(ggplot2)
+
+# extract the variable importances from the rf model
+rf_importance <- varImp(model_rf, scale = TRUE)$importance %>%
+  rownames_to_column("Variable") %>%
+  arrange(desc(Overall)) %>%
+  slice_head(n = 15)  # Top 15
+
+# Plot the top 15 important variables
+ggplot(rf_importance, aes(x = reorder(Variable, Overall), y = Overall)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Random Forest – Variable Importance",
+       x = NULL, y = "Importance (scaled)") +
+  theme_minimal()
+```
+Next we will also extract the coefficients from the logistic regression
+```{r}
+lasso_coefs <- coef(model_lr$finalModel, s = model_lr$bestTune$lambda) %>%
+  as.matrix() %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("Variable") %>%
+  dplyr::rename(Coefficient = 2) %>%
+  dplyr::filter(Variable != "(Intercept)", Coefficient != 0) %>%
+  dplyr::arrange(desc(abs(Coefficient)))
+
+# Plot
+ggplot(lr_coefs, aes(x = reorder(Variable, Coefficient),
+                      y = Coefficient,
+                      fill = Coefficient > 0)) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "steelblue", "FALSE" = "tomato"),
+                    labels = c("TRUE" = "→ Mutant", "FALSE" = "→ WT")) +
+  labs(title = "Logistic Regression – Coefficients",
+       x = NULL, y = "Coefficient", fill = "Direction") +
+  theme_minimal()
+```
+
+
+
 
