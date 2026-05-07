@@ -26,8 +26,6 @@ target <- "paper_IDH.status"
 features <- c(
   "paper_Age..years.at.diagnosis.",
   "paper_Gender",
-  "paper_Histology",
-  "paper_Grade",
   "paper_Karnofsky.Performance.Score",
   "paper_Mutation.Count",
   "paper_Percent.aneuploidy",
@@ -37,15 +35,17 @@ features <- c(
   "paper_TERT.promoter.status",
   "paper_TERT.expression..log2.",
   "paper_ATRX.status",
-  "paper_BRAF.V600E.status",
   "paper_ABSOLUTE.purity",
   "paper_ABSOLUTE.ploidy",
   "paper_ESTIMATE.stromal.score",
-  "paper_ESTIMATE.immune.score"
+  "paper_ESTIMATE.immune.score",
+  "paper_BRAF.V600E.status",
+  "barcode"
 )
 # then we can define a new data frame containing only the variables in the features and the target
 anot_clean_IDH <- anot_clean %>%
   dplyr::select(all_of(c(target, features))) %>%
+  column_to_rownames("barcode") %>%
   mutate(across(where(is.character), as.factor)) %>%
   mutate(paper_IDH.status = as.factor(paper_IDH.status))
 ```
@@ -57,7 +57,7 @@ vis_miss(anot_clean_IDH)
 ```
 Since paper_TERT.promoter.status has 85% missing values we will exclude it from further analysis and imputation
 ```{r}
-anot_clean_IDH2 <- anot_clean_IDH[which(names(anot_clean_IDH) != "paper_TERT.promoter.sta")]
+anot_clean_IDH2 <- anot_clean_IDH %>% dplyr::select(-c(paper_TERT.promoter.status))
 ```
 For the other variables we will perform imputations, meaning that missing values will be replaced by computationally determinded values.
 ```{r}
@@ -68,26 +68,22 @@ imp <- mice(anot_clean_IDH2, m = 1, method = NULL, seed = 42, printFlag = FALSE)
 anot_clean_IDH_complete <- complete(imp, 1)
 miss_var_summary(anot_clean_IDH_complete)
 ```
-We will exclude paper Histology and paper Grade since they only take one value which also causes them to fail at the imputation.
-```{r}
-anot_clean_IDH_complete <- anot_clean_IDH_complete %>% dplyr::select(-c(paper_Histology, paper_Grade))
-```
 We now have a dataframe with no missing values. 
 ##  Train/test split (70/30 or 5-fold CV). Fit: Logistic Regression, Random Forest, k-NN.
 ```{r}
 library(caret)
 
-# first we need to split the data into a testing and training dataset
+# first we need to split the data into a testing and training dataset -> since there are only very few positives (mutants) in the IDH status we decided to do a 60/40 data partition to get sufficient amount of positives in the testing data set as well
 set.seed(42)
 train_index <- createDataPartition(anot_clean_IDH_complete$paper_IDH.status, 
-                                   p = 0.7, list = FALSE)
+                                   p = 0.6, list = FALSE)
 train_data_IDH <- anot_clean_IDH_complete[train_index, ]
 test_data_IDH  <- anot_clean_IDH_complete[-train_index, ]
 
 # alternatively we can also do a 5-fold crossvalidation
 ctrl <- trainControl(method = "cv", number = 5,
                      classProbs = TRUE,
-                     summaryFunction = twoClassSummary)
+                     summaryFunction = twoClassSummary) # takes class imbalance into account
 
 # first fit the logistic regression
 set.seed(42)
@@ -198,11 +194,11 @@ lasso_coefs <- coef(model_lr$finalModel, s = model_lr$bestTune$lambda) %>%
   as.data.frame() %>%
   tibble::rownames_to_column("Variable") %>%
   dplyr::rename(Coefficient = 2) %>%
-  dplyr::filter(Variable != "(Intercept)", Coefficient != 0) %>%
+  dplyr::filter(Variable != "(Intercept)") %>%
   dplyr::arrange(desc(abs(Coefficient)))
 
 # Plot
-ggplot(lr_coefs, aes(x = reorder(Variable, Coefficient),
+ggplot(lasso_coefs, aes(x = reorder(Variable, Coefficient),
                       y = Coefficient,
                       fill = Coefficient > 0)) +
   geom_col() +
@@ -212,6 +208,192 @@ ggplot(lr_coefs, aes(x = reorder(Variable, Coefficient),
   labs(title = "Logistic Regression – Coefficients",
        x = NULL, y = "Coefficient", fill = "Direction") +
   theme_minimal()
+```
+# D Integrative Analysis
+## Build a multimodal classifier: combine top expression features with key clinical features. Does
+adding clinical data improve predictive performance?
+-> For this excersize we will build a classifier based on expression data to also predict the IDH status and then we will combine it with the clinical variables we have used before to see whether this enhances the model
+```{r}
+# first we will perform similar data preparation steps for the expression data as we have conducted them before 
+# set rows to patient barcodes and columns to genes
+data_model_exp <- gbm_exp_clean
+data_model_exp <- data_model_exp[,-1]
+data_model_exp <- t(data_model_exp)
+colnames(data_model_exp) <- gbm_exp_clean$gene
+data_model_exp = scale(data_model_exp)
+data_model_exp = as.data.frame(data_model_exp)
+# next we will join the annotation column for the IDH status
+anot_model <- anot_clean_IDH_complete %>%
+  rownames_to_column("barcode") %>%
+  dplyr::select(-paper_IDH.status)
+
+data_model_exp <- data_model_exp %>%
+  rownames_to_column("barcode") %>%
+  left_join(anot_clean_IDH_complete %>%
+              rownames_to_column("barcode") %>%    # ← rownames → Spalte
+              dplyr::select(barcode, paper_IDH.status),
+            by = "barcode") %>%
+  column_to_rownames("barcode")
+```
+Now we can create a 70/30 data partition and train a logistic regression model to predict the IDH status based on the expression data
+```{r}
+# 70/30 Split -> since there are only very few positives (mutants) in the IDH status we decided to do a 60/40 data partition to get sufficient amount of positives in the testing data set as well
+set.seed(42)
+train_index <- createDataPartition(data_model_exp$paper_IDH.status, 
+                                   p = 0.6, list = FALSE)
+train_exp <- data_model_exp[train_index, ]
+test_exp  <- data_model_exp[-train_index, ]
+
+# create a 5 fold cross validation that takes class imbalance into account (smote)
+ctrl <- trainControl(method = "cv", number = 5,
+                     classProbs = TRUE,
+                     summaryFunction = twoClassSummary)
+# train the model using glmnet -> LASSO 
+set.seed(42)
+tune_grid <- expand.grid(alpha  = 1, lambda = 10^seq(-4, 0, length = 50))  # 50 lambda values
+
+# train a logistic regression model with glmnet -> uses Lasso regularization automatically
+set.seed(42)
+model_exp_lr <- caret::train(paper_IDH.status ~ ., 
+                             data = train_exp,
+                             method = "glmnet",
+                             family = "binomial",
+                             trControl = ctrl,
+                             metric = "ROC",
+                             tuneGrid = tune_grid)
+
+# Evaluation
+pred_exp_lr  <- predict(model_exp_lr, test_exp)
+prob_exp_lr  <- predict(model_exp_lr, test_exp, type = "prob")[, "Mutant"]
+
+confusionMatrix(pred_exp_lr, test_exp$paper_IDH.status, positive = "Mutant")
+
+roc_exp_lr <- roc(test_exp$paper_IDH.status, prob_exp_lr, levels = c("WT", "Mutant"))
+auc(roc_exp_lr)
+```
+We can also plot all non zero coefficients
+```{r}
+# Koeffizienten extrahieren
+exp_coefs <- coef(model_exp_lr$finalModel, model_exp_lr$bestTune$lambda) %>%
+  as.matrix() %>%
+  as.data.frame() %>%
+  setNames("Coefficient") %>%
+  rownames_to_column("Variable") %>%
+  filter(Variable != "(Intercept)", Coefficient != 0) %>%
+  arrange(desc(abs(Coefficient)))
+
+print(exp_coefs)
+
+# Plot
+ggplot(exp_coefs, aes(x = reorder(Variable, Coefficient),
+                      y = Coefficient,
+                      fill = Coefficient > 0)) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "steelblue", "FALSE" = "tomato"),
+                    labels = c("TRUE" = "→ Mutant", "FALSE" = "→ WT")) +
+  labs(title = "Non-zero Coefficients – Expression Model",
+       x = NULL, y = "Coefficient", fill = "Direction") +
+  theme_minimal()
+```
+
+Now we want to train another model including clinical data (difined variables) so see whether the performance is imporved.
+```{r}
+#first we prepare a combined data set with the anotation data and expression data joined by barcode and only 1 columns for IDH status
+anot_model <- anot_clean_IDH_complete %>%
+  dplyr::select(paper_BRAF.V600E.status,
+                paper_ATRX.status) %>%
+  rownames_to_column("barcode")
+
+data_model_combined <- data_model_exp %>%
+  rownames_to_column("barcode") %>%
+  left_join(anot_model, by = "barcode") %>%
+  column_to_rownames("barcode")
+```
+Now we can create a data partition again and train a model
+```{r}
+# create a data partition -> since there are only very few positives (mutants) in the IDH status we decided to do a 60/40 data partition to get sufficient amount of positives in the testing data set as well
+set.seed(42)
+train_index_comb <- createDataPartition(data_model_combined$paper_IDH.status,
+                                        p = 0.6, list = FALSE)
+train_comb <- data_model_combined[train_index_comb, ]
+test_comb  <- data_model_combined[-train_index_comb, ]
+
+ctrl <- trainControl(method = "cv", number = 5,
+                     classProbs = TRUE,
+                     summaryFunction = twoClassSummary)
+
+# train the model using glmnet -> LASSO 
+set.seed(42)
+tune_grid <- expand.grid(
+  alpha  = 1,                          # LASSO only
+  lambda = 10^seq(-4, 0, length = 50)  # 50 lambda values
+)
+model_combined <- caret::train(paper_IDH.status ~ .,
+                               data = train_comb,
+                               method = "glmnet",
+                               family = "binomial",
+                               tuneGrid = tune_grid,
+                               trControl = ctrl,
+                               metric = "ROC")
+# Evaluation
+pred_comb <- predict(model_combined, test_comb)
+prob_comb <- predict(model_combined, test_comb, type = "prob")[, "Mutant"]
+
+confusionMatrix(pred_comb, test_comb$paper_IDH.status, positive = "Mutant")
+
+roc_comb <- roc(test_comb$paper_IDH.status, prob_comb, levels = c("WT", "Mutant"))
+auc(roc_comb)
+```
+Now lets compare the models
+```{r}
+# Predictions for all different models
+# Expression only
+pred_exp  <- predict(model_exp_lr, test_exp)
+prob_exp  <- predict(model_exp_lr, test_exp, type = "prob")[, "Mutant"]
+
+# Combined
+pred_comb <- predict(model_combined, test_comb)
+prob_comb <- predict(model_combined, test_comb, type = "prob")[, "Mutant"]
+
+# Clinical only (coded above)
+pred_lr   <- predict(model_lr, test_data_IDH)
+prob_lr   <- predict(model_lr, test_data_IDH, type = "prob")[, "Mutant"]
+
+# compute roc
+roc_exp  <- roc(test_exp$paper_IDH.status,  prob_exp,  levels = c("WT", "Mutant"))
+roc_comb <- roc(test_comb$paper_IDH.status, prob_comb, levels = c("WT", "Mutant"))
+roc_lr   <- roc(test_data_IDH$paper_IDH.status, prob_lr,   levels = c("WT", "Mutant"))
+
+# combine all results in a tibble 
+results_all <- tibble(
+  Model       = c("Clinical only", "Expression only", "Combined"),
+  AUC         = round(c(as.numeric(auc(roc_lr)),
+                        as.numeric(auc(roc_exp)),
+                        as.numeric(auc(roc_comb))), 3),
+  Sensitivity = round(c(
+    confusionMatrix(pred_lr,   test_data_IDH$paper_IDH.status, positive = "Mutant")$byClass["Sensitivity"],
+    confusionMatrix(pred_exp,  test_exp$paper_IDH.status,  positive = "Mutant")$byClass["Sensitivity"],
+    confusionMatrix(pred_comb, test_comb$paper_IDH.status, positive = "Mutant")$byClass["Sensitivity"]
+  ), 3),
+  Specificity = round(c(
+    confusionMatrix(pred_lr,   test_data_IDH$paper_IDH.status, positive = "Mutant")$byClass["Specificity"],
+    confusionMatrix(pred_exp,  test_exp$paper_IDH.status,  positive = "Mutant")$byClass["Specificity"],
+    confusionMatrix(pred_comb, test_comb$paper_IDH.status, positive = "Mutant")$byClass["Specificity"]
+  ), 3)
+)
+
+print(results_all)
+
+# Plot
+plot(roc_lr,   col = "blue",  main = "ROC Curves")
+plot(roc_exp,  col = "red",   add = TRUE)
+plot(roc_comb, col = "green", add = TRUE)
+legend("bottomright",
+       legend = c(paste("Clinical    AUC =", round(auc(roc_lr),   3)),
+                  paste("Expression  AUC =", round(auc(roc_exp),  3)),
+                  paste("Combined    AUC =", round(auc(roc_comb), 3))),
+       col = c("blue", "red", "green"), lwd = 2)
 ```
 
 
