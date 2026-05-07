@@ -68,42 +68,14 @@ expr_features <- t_gbm_exp_clean[, top_genes]
 clinical_features <- gbm_anot_clean[, c("paper_Age..years.at.diagnosis.", 
                                          "paper_Survival..months.","paper_Mutation.Count",
                                         "paper_Percent.aneuploidy",
-                                        "paper_TERT.expression..log2.",
+                                        "paper_TERT.expression..log2."
                                         )]
 
 # Zielvariable (z.B. Tumorsubtyp oder Überlebensstatus)
-labels <- gbm_anot_clean$paper_IDH.status  # Beispiel
+labels <- gbm_anot_clean$paper_Gender  # Beispiel
 ```
 
 
-```{r}
-library(randomForest)
-
-# Fehlende Werte entfernen (randomForest verträgt keine NAs)
-df_expr     <- na.omit(data.frame(expr_features, label = as.factor(labels)))
-df_clinical <- na.omit(data.frame(clinical_features, label = as.factor(labels)))
-df_combined <- na.omit(data.frame(expr_features, clinical_features, label = as.factor(labels)))
-
-# Modelle trainieren
-model_expr     <- randomForest(label ~ ., data = df_expr)
-model_clinical <- randomForest(label ~ ., data = df_clinical)
-model_combined <- randomForest(label ~ ., data = df_combined)
-
-# OOB Accuracy (= 1 - OOB Error)
-acc_expr     <- 1 - model_expr$err.rate[500, "OOB"]
-acc_clinical <- 1 - model_clinical$err.rate[500, "OOB"]
-acc_combined <- 1 - model_combined$err.rate[500, "OOB"]
-
-# Übersichtstabelle
-comparison <- data.frame(
-  Modell    = c("Expression only", "Clinical only", "Combined"),
-  OOB_Error = c(model_expr$err.rate[500, "OOB"],
-                model_clinical$err.rate[500, "OOB"],
-                model_combined$err.rate[500, "OOB"]),
-  Accuracy  = c(acc_expr, acc_clinical, acc_combined)
-)
-print(comparison)
-```
 ```{r}
 
 # Verbesserung durch klinische Daten quantifizieren
@@ -178,5 +150,10 @@ data.frame(
                1 - model_clinical_lasso$err.rate[500, "OOB"],
                1 - model_combined_lasso$err.rate[500, "OOB"])
 )
+```
+
+# Visualize: boxplots of top expression features stratified by clinical subgroups; annotated heatmap with both molecular and clinical annotations.
+```{r}
+
 ```
 
